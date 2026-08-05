@@ -113,6 +113,7 @@ def run_poller(
                         status_url,
                         job_id,
                         "completed",
+                        payload=payload,
                         result={
                             "status": result.status,
                             "message": result.message,
@@ -182,6 +183,7 @@ def run_poll_client(
                             job_id,
                             "completed",
                             method=status_method,
+                            payload=payload,
                             result=daemon_job.get("result") if isinstance(daemon_job.get("result"), dict) else daemon_job,
                         )
                     else:
