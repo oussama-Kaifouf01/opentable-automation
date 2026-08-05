@@ -30,19 +30,26 @@ function Copy-ProjectFiles {
     param([string]$Source, [string]$Destination)
 
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-    $excludedDirs = @(".venv", ".opentable-profile", ".opentable-profile-camoufox", ".opentable-profile-chromium", ".opentable-profile-test", "artifacts", "__pycache__", "delivery")
+    $excludedDirs = @(".git", ".venv", ".opentable-profile", ".opentable-profile-camoufox", ".opentable-profile-chromium", ".opentable-profile-test", "artifacts", "__pycache__", "delivery")
     $excludedFiles = @(".env", "config.json", "*.pyc", "*.pyo", "*.log")
 
-    Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-        if ($_.PSIsContainer -and $excludedDirs -contains $_.Name) {
-            return
+    foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
+        $skip = $false
+        if ($item.PSIsContainer -and $excludedDirs -contains $item.Name) {
+            $skip = $true
         }
-        foreach ($pattern in $excludedFiles) {
-            if ($_.Name -like $pattern) {
-                return
+        if (-not $skip) {
+            foreach ($pattern in $excludedFiles) {
+                if ($item.Name -like $pattern) {
+                    $skip = $true
+                    break
+                }
             }
         }
-        Copy-Item -LiteralPath $_.FullName -Destination $Destination -Recurse -Force
+        if ($skip) {
+            continue
+        }
+        Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
     }
 
     Get-ChildItem -LiteralPath $Destination -Recurse -Force -Directory |
