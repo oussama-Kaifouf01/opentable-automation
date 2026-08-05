@@ -40,7 +40,7 @@ function Register-LogonTask {
         -ExecutionTimeLimit (New-TimeSpan -Days 30) `
         -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1)
-    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel LeastPrivilege
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
     $task = New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
     Register-ScheduledTask -TaskName $TaskName -InputObject $task -Force | Out-Null
 }
