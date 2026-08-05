@@ -126,7 +126,7 @@ def run_poller(
                         opentable.save_artifacts(context, artifacts_dir, f"poll-{job_id}-error")
                     except Exception:
                         pass
-                    _post_status(status_url, job_id, "failed", error=str(exc))
+                    _post_status(status_url, job_id, "failed", payload=payload, error=str(exc))
                     print(f"[poll] failed job {job_id}: {exc}", flush=True)
             if once:
                 return 0
@@ -192,6 +192,7 @@ def run_poll_client(
                             job_id,
                             "failed",
                             method=status_method,
+                            payload=payload,
                             error=str(daemon_job.get("error") or "daemon job failed"),
                             result=daemon_job,
                         )

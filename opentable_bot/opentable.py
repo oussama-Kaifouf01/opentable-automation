@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import calendar
 from datetime import date
+from datetime import datetime
+import json
 import os
 import re
 from time import sleep
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from playwright.sync_api import BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 
@@ -20,6 +23,12 @@ CALENDAR_GRID_Y = 334
 CALENDAR_CELL_WIDTH = 95
 CALENDAR_CELL_HEIGHT = 79
 FINAL_CTA_DELAY_SECONDS = 5
+DIAGNOSTIC_EVENT_LIMIT = 80
+DIAGNOSTIC_TEXT_LIMIT = 900
+
+_DIAGNOSTIC_STORES: dict[int, list[dict[str, Any]]] = {}
+_DIAGNOSTIC_CONTEXT_IDS: set[int] = set()
+_DIAGNOSTIC_PAGE_IDS: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -173,6 +182,25 @@ def admin_book_reservation(
     *,
     confirm: bool,
 ) -> BookingResult:
+    _ensure_browser_diagnostics(context)
+    try:
+        return _admin_book_reservation_impl(context, config, confirm=confirm)
+    except Exception as exc:
+        diagnostics = save_failure_diagnostics(
+            context,
+            config.path.parent / "artifacts",
+            f"admin-book-error-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+            exc,
+        )
+        raise RuntimeError(format_failure_message(str(exc), diagnostics)) from exc
+
+
+def _admin_book_reservation_impl(
+    context: BrowserContext,
+    config: AppConfig,
+    *,
+    confirm: bool,
+) -> BookingResult:
     reservation = config.reservation
     selectors = config.admin.selectors or {}
     page = _page(context)
@@ -282,6 +310,197 @@ def save_artifacts(context: BrowserContext, base_dir: Path, name: str) -> None:
     safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-") or "opentable"
     page.screenshot(path=str(base_dir / f"{safe_name}.png"), full_page=True)
     (base_dir / f"{safe_name}.html").write_text(page.content(), encoding="utf-8")
+
+
+def save_failure_diagnostics(
+    context: BrowserContext,
+    base_dir: Path,
+    name: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    page = _page(context)
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", name).strip("-") or "opentable-error"
+    screenshot_path = base_dir / f"{safe_name}.png"
+    html_path = base_dir / f"{safe_name}.html"
+    text_path = base_dir / f"{safe_name}.txt"
+    json_path = base_dir / f"{safe_name}.diagnostics.json"
+
+    title = ""
+    visible_text = ""
+    try:
+        title = page.title(timeout=2000)
+    except Exception:
+        title = ""
+    try:
+        visible_text = _visible_text(page)
+    except Exception:
+        visible_text = ""
+    try:
+        page.screenshot(path=str(screenshot_path), full_page=True)
+    except Exception:
+        screenshot_path = None
+    try:
+        html_path.write_text(page.content(), encoding="utf-8")
+    except Exception:
+        html_path = None
+
+    text_excerpt = _diagnostic_text_excerpt(visible_text)
+    try:
+        text_path.write_text(text_excerpt, encoding="utf-8")
+    except Exception:
+        text_path = None
+
+    events = list(_DIAGNOSTIC_STORES.get(id(context), []))[-DIAGNOSTIC_EVENT_LIMIT:]
+    diagnostics: dict[str, Any] = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "error": str(exc),
+        "url": page.url,
+        "title": title,
+        "visibleTextExcerpt": text_excerpt,
+        "recentBrowserEvents": events,
+        "artifacts": {
+            "screenshot": str(screenshot_path) if screenshot_path else None,
+            "html": str(html_path) if html_path else None,
+            "text": str(text_path) if text_path else None,
+            "diagnostics": str(json_path),
+        },
+    }
+    json_path.write_text(json.dumps(diagnostics, indent=2, ensure_ascii=False), encoding="utf-8")
+    return diagnostics
+
+
+def format_failure_message(error: str, diagnostics: dict[str, Any]) -> str:
+    parts = [error]
+    url = diagnostics.get("url")
+    title = diagnostics.get("title")
+    if title:
+        parts.append(f"Page title: {title}")
+    if url:
+        parts.append(f"Page URL: {url}")
+
+    events = diagnostics.get("recentBrowserEvents") or []
+    important_events = [
+        event for event in events
+        if event.get("level") in {"error", "requestfailed", "pageerror", "http"}
+    ][-5:]
+    if important_events:
+        event_lines = []
+        for event in important_events:
+            message = event.get("message") or event.get("url") or event.get("text") or ""
+            event_lines.append(f"{event.get('level')}: {_compact_text(str(message))[:180]}")
+        parts.append("Recent browser issues: " + " | ".join(event_lines))
+
+    text_excerpt = diagnostics.get("visibleTextExcerpt")
+    if text_excerpt:
+        parts.append(f"Visible page text: {_compact_text(str(text_excerpt))[:DIAGNOSTIC_TEXT_LIMIT]}")
+
+    artifacts = diagnostics.get("artifacts") or {}
+    diagnostics_path = artifacts.get("diagnostics")
+    screenshot_path = artifacts.get("screenshot")
+    if diagnostics_path:
+        parts.append(f"Diagnostics: {diagnostics_path}")
+    if screenshot_path:
+        parts.append(f"Screenshot: {screenshot_path}")
+    return "\n".join(parts)
+
+
+def _ensure_browser_diagnostics(context: BrowserContext) -> None:
+    context_id = id(context)
+    _DIAGNOSTIC_STORES.setdefault(context_id, [])
+    if context_id not in _DIAGNOSTIC_CONTEXT_IDS:
+        _DIAGNOSTIC_CONTEXT_IDS.add(context_id)
+        try:
+            context.on("page", lambda page: _attach_page_diagnostics(context, page))
+        except Exception:
+            pass
+    for page in context.pages:
+        _attach_page_diagnostics(context, page)
+
+
+def _attach_page_diagnostics(context: BrowserContext, page: Page) -> None:
+    page_id = id(page)
+    if page_id in _DIAGNOSTIC_PAGE_IDS:
+        return
+    _DIAGNOSTIC_PAGE_IDS.add(page_id)
+
+    try:
+        page.on(
+            "console",
+            lambda msg: _record_browser_event(
+                context,
+                {
+                    "level": msg.type,
+                    "message": msg.text,
+                    "location": msg.location,
+                    "url": page.url,
+                },
+            ) if msg.type in {"error", "warning"} else None,
+        )
+    except Exception:
+        pass
+    try:
+        page.on(
+            "pageerror",
+            lambda error: _record_browser_event(
+                context,
+                {"level": "pageerror", "message": str(error), "url": page.url},
+            ),
+        )
+    except Exception:
+        pass
+    try:
+        page.on(
+            "requestfailed",
+            lambda request: _record_browser_event(
+                context,
+                {
+                    "level": "requestfailed",
+                    "method": request.method,
+                    "url": request.url,
+                    "message": request.failure or "",
+                },
+            ),
+        )
+    except Exception:
+        pass
+    try:
+        page.on("response", lambda response: _record_http_response_event(context, response))
+    except Exception:
+        pass
+
+
+def _record_http_response_event(context: BrowserContext, response) -> None:
+    try:
+        status = int(response.status)
+        url = str(response.url)
+    except Exception:
+        return
+    if status < 400:
+        return
+    if "opentable" not in url.lower() and "guestcenter" not in url.lower():
+        return
+    _record_browser_event(
+        context,
+        {
+            "level": "http",
+            "status": status,
+            "url": url,
+            "message": f"HTTP {status}",
+        },
+    )
+
+
+def _record_browser_event(context: BrowserContext, event: dict[str, Any]) -> None:
+    store = _DIAGNOSTIC_STORES.setdefault(id(context), [])
+    store.append({"timestamp": datetime.now().isoformat(timespec="seconds"), **event})
+    if len(store) > DIAGNOSTIC_EVENT_LIMIT:
+        del store[:len(store) - DIAGNOSTIC_EVENT_LIMIT]
+
+
+def _diagnostic_text_excerpt(text: str) -> str:
+    lines = _summarize_lines(text)
+    return "\n".join(lines[:20])[:DIAGNOSTIC_TEXT_LIMIT]
 
 
 def _page(context: BrowserContext) -> Page:
