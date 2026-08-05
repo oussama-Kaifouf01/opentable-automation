@@ -1,0 +1,51 @@
+{
+  "browser": {
+    "engine": "camoufox",
+    "headless": false,
+    "profile_dir": ".opentable-profile-camoufox",
+    "slow_mo_ms": 0,
+    "timeout_ms": 60000
+  },
+  "opentable": {
+    "home_url": "https://www.opentable.com/",
+    "login_url": "https://guestcenter.opentable.com/login",
+    "reservations_url": "https://www.opentable.com/profile/reservations"
+  },
+  "admin": {
+    "dashboard_url": "https://guestcenter.opentable.com/",
+    "reservations_url": "https://guestcenter.opentable.com/",
+    "selectors": {
+      "new_reservation_button": "[data-testid=\"addReservationActionContainer\"]",
+      "date_tab": "",
+      "party_size_tab": "",
+      "time_tab": "",
+      "guest_tab": "",
+      "next_month_button": "[class*=\"DatePicker__nav\"] > button:nth-child(2)",
+      "previous_month_button": "[class*=\"DatePicker__nav\"] > button:nth-child(1)",
+      "guest_name": "",
+      "first_name": "",
+      "last_name": "",
+      "email": "",
+      "phone": "",
+      "party_size": "",
+      "date": "",
+      "time": "",
+      "notes": "",
+      "save_button": ""
+    }
+  },
+  "reservation": {
+    "restaurant_url": "https://www.opentable.com/r/YOUR-RESTAURANT-SLUG",
+    "party_size": 2,
+    "date": "2026-06-20",
+    "time": "19:00",
+    "guest": {
+      "first_name": "First",
+      "last_name": "Last",
+      "email": "you@example.com",
+      "phone": "+15555550123"
+    },
+    "special_request": "",
+    "occasion": ""
+  }
+}
