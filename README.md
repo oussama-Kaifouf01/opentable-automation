@@ -7,6 +7,43 @@ Python CLI for opening OpenTable with a persistent browser profile, checking res
 
 This uses Camoufox as the browser engine. Camoufox is launched through a Playwright-compatible Python API, so the automation code still uses Playwright-style calls like `page.get_by_role(...)`, but the browser profile and executable are Camoufox/Firefox. It does not bypass CAPTCHA, payment verification, SMS checks, or OpenTable account security. The safest workflow is to run `book` without `--confirm`, review the browser, then rerun with `--confirm` only when the details are correct.
 
+## Simple Bar Italia Setup
+
+Clone the repo, then run everything from that folder. Do not copy it to another install directory.
+
+```powershell
+git clone https://github.com/oussama-Kaifouf01/opentable-automation.git
+cd opentable-automation
+Set-ExecutionPolicy -Scope Process Bypass
+.\setup.ps1
+notepad .env
+.\login.ps1
+.\start.ps1
+```
+
+Put the OpenTable GuestCenter credentials in `.env`:
+
+```env
+OPENTABLE_EMAIL=real-email
+OPENTABLE_PASSWORD=real-password
+```
+
+Useful commands:
+
+```powershell
+.\automate.ps1
+```
+
+```powershell
+.\listen.ps1
+```
+
+```powershell
+.\health.ps1
+```
+
+`setup.ps1` configures the Bar Italia GuestCenter URL, n8n queue URL, n8n status URL, dependencies, Camoufox, and Windows startup tasks. The only manual step is the OpenTable login.
+
 ## Setup
 
 ```powershell
