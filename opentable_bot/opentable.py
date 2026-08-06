@@ -981,6 +981,8 @@ def _wait_for_guestbook_contact_form(scope) -> None:
         scope.get_by_test_id("mgp-contact-form-button-done"),
         scope.get_by_role("button", name=re.compile(r"^Done$", re.I)),
         scope.get_by_text(re.compile(r"^Edit Contact$", re.I)),
+        scope.get_by_role("textbox", name=re.compile(r"^First name$", re.I)),
+        scope.get_by_role("textbox", name=re.compile(r"^Last name$", re.I)),
         scope.get_by_placeholder(re.compile(r"^First name$", re.I)),
         scope.get_by_placeholder(re.compile(r"^Last name$", re.I)),
     ]
@@ -998,6 +1000,8 @@ def _wait_for_guestbook_contact_form(scope) -> None:
 
 def _wait_for_guestbook_edit_fields(scope) -> None:
     for candidate in (
+        scope.get_by_role("textbox", name=re.compile(r"^First name$", re.I)),
+        scope.get_by_role("textbox", name=re.compile(r"^Last name$", re.I)),
         scope.get_by_placeholder(re.compile(r"^First name$", re.I)),
         scope.get_by_placeholder(re.compile(r"^Last name$", re.I)),
     ):
@@ -1030,6 +1034,7 @@ def _fill_guestbook_contact_fields(scope, reservation: ReservationConfig) -> boo
 def _fill_guestbook_input(scope, placeholder: str, value: str, *, exact: bool = False) -> bool:
     pattern = re.compile(rf"^{re.escape(placeholder)}$", re.I)
     candidates = [
+        scope.get_by_role("textbox", name=pattern),
         scope.get_by_placeholder(pattern),
         scope.locator(f"input[placeholder='{placeholder}']"),
     ]
@@ -1040,20 +1045,33 @@ def _fill_guestbook_input(scope, placeholder: str, value: str, *, exact: bool = 
 
 
 def _guestbook_input_has_value(scope, placeholder: str, value: str, *, exact: bool) -> bool:
-    locator = scope.get_by_placeholder(re.compile(rf"^{re.escape(placeholder)}$", re.I)).first
-    try:
-        actual = locator.input_value(timeout=1000).strip()
-    except Exception:
-        return True
-    return actual == value if exact else bool(actual)
+    pattern = re.compile(rf"^{re.escape(placeholder)}$", re.I)
+    for locator in (
+        scope.get_by_role("textbox", name=pattern),
+        scope.get_by_placeholder(pattern),
+        scope.locator(f"input[placeholder='{placeholder}']"),
+    ):
+        try:
+            actual = locator.first.input_value(timeout=1000).strip()
+        except Exception:
+            continue
+        return actual == value if exact else bool(actual)
+    return True
 
 
 def _guestbook_phone_has_value(scope) -> bool:
-    locator = scope.get_by_placeholder(re.compile(r"^Phone number$", re.I)).first
-    try:
-        return bool(locator.input_value(timeout=1000).strip())
-    except Exception:
-        return False
+    pattern = re.compile(r"^Phone number$", re.I)
+    for locator in (
+        scope.get_by_role("textbox", name=pattern),
+        scope.get_by_placeholder(pattern),
+        scope.locator("input[type='tel']"),
+    ):
+        try:
+            if locator.first.input_value(timeout=1000).strip():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _format_guestbook_phone_number(phone: str) -> str:
