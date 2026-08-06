@@ -6,6 +6,7 @@ from datetime import datetime
 import json
 import os
 import re
+from time import perf_counter
 from time import sleep
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,7 @@ CALENDAR_GRID_X = 166
 CALENDAR_GRID_Y = 334
 CALENDAR_CELL_WIDTH = 95
 CALENDAR_CELL_HEIGHT = 79
-FINAL_CTA_DELAY_SECONDS = 5
+FINAL_CTA_DELAY_SECONDS = 1
 DIAGNOSTIC_EVENT_LIMIT = 80
 DIAGNOSTIC_TEXT_LIMIT = 5000
 DIAGNOSTIC_HTML_LIMIT = 12000
@@ -229,30 +230,28 @@ def _admin_book_reservation_impl(
             "then press Enter only after the reservations page is visible."
         )
 
-    _admin_progress("opening reservation flow")
     _raise_if_cancelled(cancel_event)
-    _open_admin_reservation_modal(page, selectors)
-    _admin_progress("setting date")
+    _admin_step("opening reservation flow", cancel_event, lambda: _open_admin_reservation_modal(page, selectors))
     _raise_if_cancelled(cancel_event)
-    _set_admin_date(page, reservation.date, selectors)
+    _admin_step("setting date", cancel_event, lambda: _set_admin_date(page, reservation.date, selectors))
     full_name = f"{reservation.guest.first_name} {reservation.guest.last_name}".strip()
-    _admin_progress("setting guests")
     _raise_if_cancelled(cancel_event)
-    _set_admin_party_size(page, reservation.party_size, selectors)
-    _admin_progress("setting time")
+    _admin_step("setting guests", cancel_event, lambda: _set_admin_party_size(page, reservation.party_size, selectors))
     _raise_if_cancelled(cancel_event)
-    _set_admin_time(page, reservation.time, selectors)
-    _admin_progress("setting guest")
+    _admin_step("setting time", cancel_event, lambda: _set_admin_time(page, reservation.time, selectors))
     _raise_if_cancelled(cancel_event)
-    _set_admin_guest(page, reservation, selectors)
-    _admin_progress("setting notes")
+    _admin_step("setting guest", cancel_event, lambda: _set_admin_guest(page, reservation, selectors))
     _raise_if_cancelled(cancel_event)
-    _fill_configured_or_patterns(
-        page,
-        selectors.get("notes"),
-        [r"notes?", r"special request", r"internal note"],
-        reservation.special_request,
-        required=False,
+    _admin_step(
+        "setting notes",
+        cancel_event,
+        lambda: _fill_configured_or_patterns(
+            page,
+            selectors.get("notes"),
+            [r"notes?", r"special request", r"internal note"],
+            reservation.special_request,
+            required=False,
+        ),
     )
 
     _raise_if_cancelled(cancel_event)
@@ -267,18 +266,23 @@ def _admin_book_reservation_impl(
         )
 
     if _is_dinner_time(reservation.time):
-        _admin_progress("enabling credit card link switch for dinner")
         _raise_if_cancelled(cancel_event)
-        _set_admin_credit_card_link_checked(page, checked=True, required=True)
+        _admin_step(
+            "enabling credit card link switch for dinner",
+            cancel_event,
+            lambda: _set_admin_credit_card_link_checked(page, checked=True, required=True),
+        )
     else:
-        _admin_progress("disabling credit card link switch for lunch")
         _raise_if_cancelled(cancel_event)
-        _set_admin_credit_card_link_checked(page, checked=False, required=False)
+        _admin_step(
+            "disabling credit card link switch for lunch",
+            cancel_event,
+            lambda: _set_admin_credit_card_link_checked(page, checked=False, required=False),
+        )
     _admin_progress(f"waiting {FINAL_CTA_DELAY_SECONDS}s before Make reservation")
     _sleep_with_cancel(FINAL_CTA_DELAY_SECONDS, cancel_event)
-    _admin_progress("clicking Make reservation")
     _raise_if_cancelled(cancel_event)
-    _click_admin_make_reservation(page, selectors.get("save_button"))
+    _admin_step("clicking Make reservation", cancel_event, lambda: _click_admin_make_reservation(page, selectors.get("save_button")))
     _wait_for_page_ready(page)
     return BookingResult(
         status="submitted",
@@ -289,6 +293,17 @@ def _admin_book_reservation_impl(
 
 def _admin_progress(message: str) -> None:
     print(f"[admin-book] {message}", flush=True)
+
+
+def _admin_step(message: str, cancel_event: Any | None, action) -> Any:
+    _admin_progress(message)
+    started = perf_counter()
+    try:
+        return action()
+    finally:
+        _raise_if_cancelled(cancel_event)
+        elapsed = perf_counter() - started
+        _admin_progress(f"{message} took {elapsed:.1f}s")
 
 
 def _raise_if_cancelled(cancel_event: Any | None) -> None:
