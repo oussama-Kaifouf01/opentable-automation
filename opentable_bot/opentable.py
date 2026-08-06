@@ -868,6 +868,10 @@ def _set_admin_guest(page: Page, reservation: ReservationConfig, selectors: dict
                 return
 
     _fill_admin_guest_fields(page, reservation, selectors)
+    for scope in [*_admin_iframes(page), page]:
+        if _click_add_to_guestbook(scope):
+            sleep(0.2)
+            break
 
 
 def _search_or_create_admin_guest(scope, search_value: str, reservation: ReservationConfig) -> bool:
@@ -882,14 +886,31 @@ def _search_or_create_admin_guest(scope, search_value: str, reservation: Reserva
         pass
     sleep(0.1)
 
-    add_to_guestbook = scope.locator("a").filter(has_text="Add to guestbook").first
-    try:
-        add_to_guestbook.click(timeout=1000)
-        sleep(0.1)
-        _fill_guest_fields_in_scope(scope, reservation)
-        return True
-    except PlaywrightTimeoutError:
+    if not _click_add_to_guestbook(scope):
         return False
+    sleep(0.1)
+    _fill_guest_fields_in_scope(scope, reservation)
+    _click_add_to_guestbook(scope)
+    return True
+
+
+def _click_add_to_guestbook(scope) -> bool:
+    patterns = [
+        re.compile(r"^Add to Guestbook$", re.I),
+        re.compile(r"Add to Guestbook", re.I),
+    ]
+    for pattern in patterns:
+        candidates = [
+            scope.get_by_role("button", name=pattern),
+            scope.get_by_role("link", name=pattern),
+            scope.get_by_text(pattern),
+            scope.locator("button").filter(has_text=pattern),
+            scope.locator("a").filter(has_text=pattern),
+        ]
+        for candidate in candidates:
+            if _click_first_enabled(candidate, timeout=1500, force=True):
+                return True
+    return False
 
 
 def _fill_admin_guest_fields(page: Page, reservation: ReservationConfig, selectors: dict[str, str]) -> None:
