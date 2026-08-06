@@ -368,6 +368,7 @@ def save_failure_diagnostics(
         "title": title,
         "visibleTextExcerpt": text_excerpt,
         "htmlExcerpt": html_content[:DIAGNOSTIC_HTML_LIMIT],
+        "clickableSummary": _admin_clickable_summary(page),
         "recentBrowserEvents": events,
         "artifacts": {
             "screenshot": str(screenshot_path) if screenshot_path else None,
@@ -404,6 +405,10 @@ def format_failure_message(error: str, diagnostics: dict[str, Any]) -> str:
     text_excerpt = diagnostics.get("visibleTextExcerpt")
     if text_excerpt:
         parts.append(f"Visible page text: {_compact_text(str(text_excerpt))[:DIAGNOSTIC_TEXT_LIMIT]}")
+
+    clickable_summary = diagnostics.get("clickableSummary")
+    if clickable_summary:
+        parts.append("Visible buttons/links: " + " | ".join(map(str, clickable_summary[:12])))
 
     artifacts = diagnostics.get("artifacts") or {}
     diagnostics_path = artifacts.get("diagnostics")
@@ -1506,27 +1511,112 @@ def _click_admin_make_reservation(page: Page, selector: str | None) -> None:
         if _click_first_enabled(scope.get_by_test_id("save-booking-flow-button"), timeout=1000):
             return
 
+    selector_patterns = [
+        "[data-testid*='save' i]",
+        "[data-testid*='booking' i]",
+        "[data-testid*='reservation' i]",
+        "button[type='submit']",
+        "button",
+        "[role='button']",
+    ]
+    for scope in scopes:
+        for selector_pattern in selector_patterns:
+            if _click_button_by_text_scan(scope, selector_pattern, _FINAL_SAVE_TEXT_PATTERN):
+                return
+
     labels = [
         r"^Make reservation$",
-        r"^Save$",
-        r"^Create$",
+        r"Make reservation",
+        r"^Create reservation$",
+        r"^Save reservation$",
+        r"^Add reservation$",
+        r"^Book reservation$",
+        r"^Reserve$",
         r"^Book$",
         r"^Confirm$",
+        r"^Save$",
+        r"^Create$",
+        r"^Done$",
     ]
     for scope in scopes:
         for label in labels:
             pattern = re.compile(label, re.I)
             for getter in (
                 lambda scope=scope, pattern=pattern: scope.get_by_role("button", name=pattern),
+                lambda scope=scope, pattern=pattern: scope.get_by_role("link", name=pattern),
                 lambda scope=scope, pattern=pattern: scope.get_by_text(pattern),
             ):
-                try:
-                    getter().first.click(timeout=800)
+                if _click_first_enabled(getter(), timeout=1000):
                     return
-                except Exception:
-                    continue
 
-    raise RuntimeError("Could not find GuestCenter Make reservation button.")
+    summary = _admin_clickable_summary(page)
+    if summary:
+        raise RuntimeError(
+            "Could not find GuestCenter Make reservation button. "
+            "Visible clickable controls: " + " | ".join(summary[:20])
+        )
+    raise RuntimeError("Could not find GuestCenter Make reservation button. No visible clickable controls were detected.")
+
+
+_FINAL_SAVE_TEXT_PATTERN = re.compile(
+    r"^(make|save|create|add|book)\s+(a\s+)?(reservation|booking)$|^(save|create|confirm|done|reserve|book)$",
+    re.I,
+)
+
+
+def _click_button_by_text_scan(scope, selector: str, pattern: re.Pattern[str]) -> bool:
+    try:
+        locators = scope.locator(selector)
+        count = min(locators.count(), 80)
+    except Exception:
+        return False
+
+    for index in range(count):
+        item = locators.nth(index)
+        try:
+            text = _compact_text(item.inner_text(timeout=250))
+        except Exception:
+            text = ""
+        if not text or not pattern.search(text):
+            continue
+        if _click_first_enabled(item, timeout=1000, force=True):
+            return True
+    return False
+
+
+def _admin_clickable_summary(page: Page) -> list[str]:
+    summary: list[str] = []
+    for index, scope in enumerate([page, *_admin_iframes(page)]):
+        label = "main" if index == 0 else f"frame {index}"
+        url = getattr(scope, "url", "")
+        try:
+            controls = scope.locator("button, [role='button'], a")
+            count = min(controls.count(), 80)
+        except Exception as exc:
+            summary.append(f"{label}: unreadable controls ({exc})")
+            continue
+
+        texts: list[str] = []
+        for control_index in range(count):
+            control = controls.nth(control_index)
+            try:
+                if not control.is_visible(timeout=150):
+                    continue
+                text = _compact_text(control.inner_text(timeout=150))
+                aria = _compact_text(control.get_attribute("aria-label", timeout=150) or "")
+                title = _compact_text(control.get_attribute("title", timeout=150) or "")
+            except Exception:
+                continue
+            control_text = text or aria or title
+            if control_text:
+                texts.append(control_text[:120])
+            if len(texts) >= 20:
+                break
+        if texts:
+            summary.append(f"{label} {url}: " + "; ".join(texts))
+        else:
+            summary.append(f"{label} {url}: no visible button/link text")
+    return summary[:12]
 
 
 def _set_admin_credit_card_link_checked(page: Page, *, checked: bool, required: bool) -> None:
