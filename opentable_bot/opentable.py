@@ -810,8 +810,16 @@ def _admin_iframes(page: Page):
 
 
 def _click_calendar_day(page: Page, target: date) -> None:
+    for scope in [*_admin_iframes(page), page]:
+        if _click_calendar_day_in_scope(scope, target):
+            return
+
+    raise RuntimeError(f"Could not click calendar day {target.isoformat()}.")
+
+
+def _click_calendar_day_in_scope(scope, target: date) -> bool:
     day = str(target.day)
-    cells = page.locator("[class*='DatePicker__DayCell']")
+    cells = scope.locator("[class*='DatePicker__DayCell']")
     try:
         count = min(cells.count(), 80)
         for index in range(count):
@@ -826,11 +834,14 @@ def _click_calendar_day(page: Page, target: date) -> None:
                 continue
             _log_click(cell)
             cell.click(timeout=2000)
-            return
+            return True
     except PlaywrightTimeoutError:
         pass
 
-    candidates = [page.get_by_text(re.compile(rf"^{day}$"))]
+    candidates = [
+        scope.get_by_role("button", name=re.compile(rf"^{day}$")),
+        scope.get_by_text(re.compile(rf"^{day}$")),
+    ]
     for candidate in candidates:
         try:
             elements = candidate
@@ -841,12 +852,10 @@ def _click_calendar_day(page: Page, target: date) -> None:
                     continue
                 _log_click(element)
                 element.click(timeout=2000)
-                return
+                return True
         except PlaywrightTimeoutError:
             continue
-    if _click_calendar_day_by_coordinates(page, target):
-        return
-    raise RuntimeError(f"Could not click calendar day {target.isoformat()}.")
+    return False
 
 
 def _set_admin_party_size(page: Page, party_size: int, selectors: dict[str, str]) -> None:
