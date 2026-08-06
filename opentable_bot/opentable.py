@@ -760,7 +760,9 @@ def _click_calendar_arrow(page: Page, selector: str | None, direction: str) -> N
     names = [r"next month", r"next", r">"] if direction == "next" else [r"previous month", r"previous", r"prev", r"<"]
     for name in names:
         try:
-            page.get_by_role("button", name=re.compile(name, re.I)).click(timeout=2000)
+            item = page.get_by_role("button", name=re.compile(name, re.I)).first
+            _log_click(item)
+            item.click(timeout=2000)
             return
         except PlaywrightTimeoutError:
             continue
@@ -776,14 +778,18 @@ def _click_calendar_arrow(page: Page, selector: str | None, direction: str) -> N
 def _click_calendar_iframe_arrow(page: Page, direction: str) -> bool:
     button_index = 4 if direction == "next" else 3
     try:
-        page.frame_locator("iframe").get_by_role("button").nth(button_index).click(timeout=3000)
+        item = page.frame_locator("iframe").get_by_role("button").nth(button_index)
+        _log_click(item)
+        item.click(timeout=3000)
         return True
     except Exception:
         pass
 
     for frame in _admin_iframes(page):
         try:
-            frame.get_by_role("button").nth(button_index).click(timeout=3000)
+            item = frame.get_by_role("button").nth(button_index)
+            _log_click(item)
+            item.click(timeout=3000)
             return True
         except Exception:
             continue
@@ -829,6 +835,7 @@ def _click_calendar_day(page: Page, target: date) -> None:
                 continue
             if _element_looks_disabled(cell):
                 continue
+            _log_click(cell)
             cell.click(timeout=2000)
             return
     except PlaywrightTimeoutError:
@@ -843,6 +850,7 @@ def _click_calendar_day(page: Page, target: date) -> None:
                 element = elements.nth(index)
                 if _element_looks_disabled(element):
                     continue
+                _log_click(element)
                 element.click(timeout=2000)
                 return
         except PlaywrightTimeoutError:
@@ -1268,7 +1276,9 @@ def _click_admin_time_labels(page: Page, labels: list[str]) -> bool:
                 return True
             pattern = re.compile(rf"\b{re.escape(label)}\b", re.I)
             try:
-                scope.get_by_text(pattern).click(timeout=700)
+                item = scope.get_by_text(pattern).first
+                _log_click(item)
+                item.click(timeout=700)
                 return True
             except Exception:
                 continue
@@ -1308,6 +1318,7 @@ def _select_admin_service_period(scope, period: str) -> bool:
             try:
                 if not item.is_visible(timeout=500):
                     continue
+                _log_click(item)
                 item.click(timeout=1500)
                 scope.locator(
                     "[class*='AvailabilityShift__shifts__item_active']"
@@ -1326,7 +1337,9 @@ def _click_exact_text_in_scope(scope, text: str) -> bool:
         lambda: scope.get_by_text(pattern),
     ):
         try:
-            getter().click(timeout=700)
+            item = getter().first
+            _log_click(item)
+            item.click(timeout=700)
             return True
         except PlaywrightTimeoutError:
             continue
@@ -1343,10 +1356,14 @@ def _click_time_label_in_scope(scope, text: str) -> bool:
             locator = getter()
             count = locator.count()
             if count > 2:
-                locator.nth(2).click(timeout=700)
+                item = locator.nth(2)
+                _log_click(item)
+                item.click(timeout=700)
                 return True
             if count:
-                locator.first.click(timeout=700)
+                item = locator.first
+                _log_click(item)
+                item.click(timeout=700)
                 return True
         except Exception:
             continue
@@ -1355,11 +1372,15 @@ def _click_time_label_in_scope(scope, text: str) -> bool:
         locator = scope.get_by_text(pattern)
         count = locator.count()
         if count > 2:
-            locator.nth(2).click(timeout=700)
+            item = locator.nth(2)
+            _log_click(item)
+            item.click(timeout=700)
             return True
         for index in range(count):
             try:
-                locator.nth(index).click(timeout=700)
+                item = locator.nth(index)
+                _log_click(item)
+                item.click(timeout=700)
                 return True
             except Exception:
                 continue
@@ -1479,6 +1500,7 @@ def _click_first_matching(locator, *, timeout: int) -> bool:
             item = locator.nth(index)
             if _element_looks_disabled(item):
                 continue
+            _log_click(item)
             item.click(timeout=timeout)
             return True
         except Exception:
@@ -1735,7 +1757,9 @@ def _click_admin_action_by_patterns(scope, patterns: list[str]) -> bool:
             lambda compiled=compiled: scope.get_by_text(compiled),
         ):
             try:
-                getter().first.click(timeout=600)
+                item = getter().first
+                _log_click(item)
+                item.click(timeout=600)
                 return True
             except Exception:
                 continue
@@ -1946,11 +1970,51 @@ def _click_first_enabled(locator, *, timeout: int, force: bool = False) -> bool:
         try:
             if not force and _element_looks_disabled(item):
                 continue
+            _log_click(item)
             item.click(timeout=timeout, force=force)
             return True
         except PlaywrightTimeoutError:
             continue
     return False
+
+
+def _log_click(locator) -> None:
+    try:
+        details = locator.evaluate(
+            """element => {
+                const compact = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                const text = compact(element.innerText || element.textContent);
+                const aria = compact(element.getAttribute('aria-label'));
+                const title = compact(element.getAttribute('title'));
+                const placeholder = compact(element.getAttribute('placeholder'));
+                const testId = compact(element.getAttribute('data-testid'));
+                const id = compact(element.id);
+                const tag = compact(element.tagName).toLowerCase();
+                const klass = compact(element.className);
+                return { text, aria, title, placeholder, testId, id, tag, klass };
+            }""",
+            timeout=500,
+        )
+    except Exception:
+        _admin_progress('clicking control text="<unreadable>"')
+        return
+
+    label = (
+        details.get("text")
+        or details.get("aria")
+        or details.get("title")
+        or details.get("placeholder")
+        or details.get("testId")
+        or details.get("id")
+        or details.get("klass")
+        or "<no text>"
+    )
+    bits = [f'text="{_compact_text(str(label))[:160]}"']
+    for key, prefix in (("tag", "tag"), ("testId", "testid"), ("id", "id")):
+        value = details.get(key)
+        if value:
+            bits.append(f"{prefix}={_compact_text(str(value))[:80]}")
+    _admin_progress("clicked " + " ".join(bits))
 
 
 def _element_looks_disabled(locator) -> bool:
