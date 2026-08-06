@@ -24,6 +24,7 @@ CALENDAR_GRID_Y = 334
 CALENDAR_CELL_WIDTH = 95
 CALENDAR_CELL_HEIGHT = 79
 FINAL_CTA_DELAY_SECONDS = 1
+FINAL_SUBMIT_VERIFY_SECONDS = 25
 DIAGNOSTIC_EVENT_LIMIT = 80
 DIAGNOSTIC_TEXT_LIMIT = 5000
 DIAGNOSTIC_HTML_LIMIT = 12000
@@ -270,10 +271,15 @@ def _admin_book_reservation_impl(
     _raise_if_cancelled(cancel_event)
     _admin_step("clicking Make reservation", cancel_event, lambda: _click_admin_make_reservation(page, selectors.get("save_button")))
     _wait_for_page_ready(page)
+    verification_message = _admin_step(
+        "verifying reservation was accepted",
+        cancel_event,
+        lambda: _verify_admin_reservation_submitted(page, reservation, cancel_event),
+    )
     return BookingResult(
         status="submitted",
         url=page.url,
-        message="Clicked the GuestCenter final save/create button.",
+        message=verification_message,
     )
 
 
@@ -290,6 +296,101 @@ def _admin_step(message: str, cancel_event: Any | None, action) -> Any:
         _raise_if_cancelled(cancel_event)
         elapsed = perf_counter() - started
         _admin_progress(f"{message} took {elapsed:.1f}s")
+
+
+def _verify_admin_reservation_submitted(
+    page: Page,
+    reservation: ReservationConfig,
+    cancel_event: Any | None,
+) -> str:
+    full_name = f"{reservation.guest.first_name} {reservation.guest.last_name}".strip()
+    deadline = perf_counter() + FINAL_SUBMIT_VERIFY_SECONDS
+    last_text = ""
+    last_summary: list[str] = []
+
+    success_pattern = re.compile(
+        r"\b("
+        r"reservation\s+(created|booked|confirmed|saved|made)"
+        r"|booking\s+(created|booked|confirmed|saved)"
+        r"|successfully\s+(created|booked|confirmed|saved)"
+        r"|confirmed"
+        r")\b",
+        re.I,
+    )
+    error_pattern = re.compile(
+        r"\b("
+        r"required|invalid|error|failed|unable|unavailable|"
+        r"try again|something went wrong|no availability|"
+        r"payment required|credit card required|card required|cannot|could not"
+        r")\b",
+        re.I,
+    )
+
+    while perf_counter() < deadline:
+        _raise_if_cancelled(cancel_event)
+        text = _compact_text(_admin_visible_text(page))
+        last_text = text
+        if text:
+            if success_pattern.search(text):
+                return "OpenTable showed a reservation confirmation after final submit."
+
+            error_match = error_pattern.search(text)
+            if error_match:
+                raise RuntimeError(
+                    "OpenTable did not create the reservation after Make reservation. "
+                    f"Visible error/signal: {error_match.group(0)}. "
+                    f"Visible text: {text[:2500]}"
+                )
+
+        try:
+            last_summary = _admin_clickable_summary(page)
+        except Exception:
+            last_summary = []
+
+        if full_name and _booking_flow_looks_closed(page) and full_name.lower() in text.lower():
+            return (
+                "OpenTable booking flow closed after final submit and the guest name is visible. "
+                "No explicit confirmation text was found."
+            )
+
+        sleep(0.5)
+
+    raise RuntimeError(
+        "Could not verify OpenTable created the reservation after clicking Make reservation. "
+        f"Waited {FINAL_SUBMIT_VERIFY_SECONDS}s. "
+        f"Visible buttons/links: {' | '.join(last_summary[:12])}. "
+        f"Visible text: {last_text[:2500]}"
+    )
+
+
+def _booking_flow_looks_closed(page: Page) -> bool:
+    for scope in [page, *_admin_iframes(page)]:
+        for locator in (
+            scope.get_by_test_id("save-booking-flow-button"),
+            scope.get_by_test_id("mgp-contact-form-button-done"),
+            scope.get_by_role("button", name=re.compile(r"^Make reservation$", re.I)),
+            scope.get_by_placeholder("Search by full phone number"),
+        ):
+            try:
+                if locator.first.is_visible(timeout=300):
+                    return False
+            except Exception:
+                continue
+    return True
+
+
+def _admin_visible_text(page: Page) -> str:
+    texts: list[str] = []
+    try:
+        texts.append(page.locator("body").inner_text(timeout=1000))
+    except Exception:
+        pass
+    for frame in _admin_iframes(page):
+        try:
+            texts.append(frame.locator("body").inner_text(timeout=1000))
+        except Exception:
+            continue
+    return "\n".join(text for text in texts if text)
 
 
 def _raise_if_cancelled(cancel_event: Any | None) -> None:
