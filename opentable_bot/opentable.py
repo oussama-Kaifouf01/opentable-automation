@@ -265,20 +265,6 @@ def _admin_book_reservation_impl(
             ),
         )
 
-    if _is_dinner_time(reservation.time):
-        _raise_if_cancelled(cancel_event)
-        _admin_step(
-            "enabling credit card link switch for dinner",
-            cancel_event,
-            lambda: _set_admin_credit_card_link_checked(page, checked=True, required=True),
-        )
-    else:
-        _raise_if_cancelled(cancel_event)
-        _admin_step(
-            "disabling credit card link switch for lunch",
-            cancel_event,
-            lambda: _set_admin_credit_card_link_checked(page, checked=False, required=False),
-        )
     _admin_progress(f"waiting {FINAL_CTA_DELAY_SECONDS}s before Make reservation")
     _sleep_with_cancel(FINAL_CTA_DELAY_SECONDS, cancel_event)
     _raise_if_cancelled(cancel_event)
