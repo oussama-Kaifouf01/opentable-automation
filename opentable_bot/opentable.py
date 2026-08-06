@@ -865,7 +865,7 @@ def _set_admin_time(page: Page, time_value: str, selectors: dict[str, str]) -> N
 def _set_admin_guest(page: Page, reservation: ReservationConfig, selectors: dict[str, str]) -> None:
     _go_to_admin_step(page, "guest", selectors.get("guest_tab"))
     full_name = f"{reservation.guest.first_name} {reservation.guest.last_name}".strip()
-    search_value = full_name or reservation.guest.phone
+    search_value = reservation.guest.phone or full_name
 
     if search_value:
         for scope in [*_admin_iframes(page), page]:
@@ -919,7 +919,12 @@ def _click_add_to_guestbook(scope) -> bool:
 
 def _complete_guestbook_contact_form(scope, reservation: ReservationConfig) -> None:
     _wait_for_guestbook_contact_form(scope)
-    _fill_guestbook_contact_fields(scope, reservation)
+    if not _fill_guestbook_contact_fields(scope, reservation):
+        if not _click_guestbook_edit(scope):
+            raise RuntimeError("Could not open GuestCenter guestbook edit form.")
+        _wait_for_guestbook_edit_fields(scope)
+        if not _fill_guestbook_contact_fields(scope, reservation):
+            raise RuntimeError("Could not fill GuestCenter guestbook first name and last name.")
     if not _click_guestbook_done(scope):
         raise RuntimeError("Could not click GuestCenter guestbook Done button.")
     sleep(0.4)
@@ -928,6 +933,7 @@ def _complete_guestbook_contact_form(scope, reservation: ReservationConfig) -> N
 def _wait_for_guestbook_contact_form(scope) -> None:
     candidates = [
         scope.get_by_test_id("mgp-contact-form-button-done"),
+        scope.get_by_role("button", name=re.compile(r"^Done$", re.I)),
         scope.get_by_text(re.compile(r"^Edit Contact$", re.I)),
         scope.get_by_placeholder(re.compile(r"^First name$", re.I)),
         scope.get_by_placeholder(re.compile(r"^Last name$", re.I)),
@@ -938,22 +944,41 @@ def _wait_for_guestbook_contact_form(scope) -> None:
             return
         except Exception:
             continue
+    if _click_guestbook_edit(scope):
+        _wait_for_guestbook_edit_fields(scope)
+        return
     raise RuntimeError("GuestCenter guestbook contact form did not open after Add to Guestbook.")
 
 
-def _fill_guestbook_contact_fields(scope, reservation: ReservationConfig) -> None:
+def _wait_for_guestbook_edit_fields(scope) -> None:
+    for candidate in (
+        scope.get_by_placeholder(re.compile(r"^First name$", re.I)),
+        scope.get_by_placeholder(re.compile(r"^Last name$", re.I)),
+    ):
+        try:
+            candidate.first.wait_for(state="visible", timeout=5000)
+            return
+        except Exception:
+            continue
+    sleep(0.3)
+
+
+def _fill_guestbook_contact_fields(scope, reservation: ReservationConfig) -> bool:
     required = [
         ("First name", reservation.guest.first_name),
         ("Last name", reservation.guest.last_name),
     ]
+    filled_required = True
     for placeholder, value in required:
         if not value:
             continue
         if not _fill_guestbook_input(scope, placeholder, value, exact=True):
-            raise RuntimeError(f"Could not fill GuestCenter guestbook {placeholder}.")
+            filled_required = False
 
-    if reservation.guest.phone:
-        _fill_guestbook_input(scope, "Phone number", reservation.guest.phone)
+    if reservation.guest.phone and not _guestbook_phone_has_value(scope):
+        phone_value = _format_guestbook_phone_number(reservation.guest.phone)
+        _fill_guestbook_input(scope, "Phone number", phone_value)
+    return filled_required
 
 
 def _fill_guestbook_input(scope, placeholder: str, value: str, *, exact: bool = False) -> bool:
@@ -977,6 +1002,26 @@ def _guestbook_input_has_value(scope, placeholder: str, value: str, *, exact: bo
     return actual == value if exact else bool(actual)
 
 
+def _guestbook_phone_has_value(scope) -> bool:
+    locator = scope.get_by_placeholder(re.compile(r"^Phone number$", re.I)).first
+    try:
+        return bool(locator.input_value(timeout=1000).strip())
+    except Exception:
+        return False
+
+
+def _format_guestbook_phone_number(phone: str) -> str:
+    value = phone.strip()
+    digits = re.sub(r"\D+", "", value)
+    if digits.startswith("00212") and len(digits) > 5:
+        return "0" + digits[5:]
+    if digits.startswith("212") and len(digits) > 3:
+        return "0" + digits[3:]
+    if len(digits) == 9 and digits[0] in {"5", "6", "7"}:
+        return "0" + digits
+    return value
+
+
 def _click_guestbook_done(scope) -> bool:
     candidates = [
         scope.get_by_test_id("mgp-contact-form-button-done"),
@@ -985,6 +1030,19 @@ def _click_guestbook_done(scope) -> bool:
     ]
     for candidate in candidates:
         if _click_first_enabled(candidate, timeout=2500, force=True):
+            return True
+    return False
+
+
+def _click_guestbook_edit(scope) -> bool:
+    candidates = [
+        scope.get_by_role("button", name=re.compile(r"^Edit$", re.I)),
+        scope.get_by_role("link", name=re.compile(r"^Edit$", re.I)),
+        scope.locator("button").filter(has_text=re.compile(r"^Edit$", re.I)),
+        scope.locator("a").filter(has_text=re.compile(r"^Edit$", re.I)),
+    ]
+    for candidate in candidates:
+        if _click_first_enabled(candidate, timeout=1500, force=True):
             return True
     return False
 
