@@ -126,7 +126,15 @@ def run_poller(
                         opentable.save_artifacts(context, artifacts_dir, f"poll-{job_id}-error")
                     except Exception:
                         pass
-                    _post_status(status_url, job_id, "failed", payload=payload, error=str(exc))
+                    diagnostics = getattr(exc, "diagnostics", None)
+                    _post_status(
+                        status_url,
+                        job_id,
+                        "failed",
+                        payload=payload,
+                        result={"diagnostics": diagnostics} if diagnostics else None,
+                        error=str(exc),
+                    )
                     print(f"[poll] failed job {job_id}: {exc}", flush=True)
             if once:
                 return 0
@@ -312,6 +320,13 @@ def _process_jobs(state: ServiceState) -> None:
                 job["status"] = "failed"
                 job["completed_at"] = _now()
                 job["error"] = str(exc)
+                diagnostics = getattr(exc, "diagnostics", None)
+                if diagnostics:
+                    job["diagnostics"] = diagnostics
+                    job["result"] = {
+                        "payload": job.get("payload"),
+                        "diagnostics": diagnostics,
+                    }
             print(f"[service] failed job {job_id}: {exc}", flush=True)
         finally:
             state.queue.task_done()

@@ -24,7 +24,8 @@ CALENDAR_CELL_WIDTH = 95
 CALENDAR_CELL_HEIGHT = 79
 FINAL_CTA_DELAY_SECONDS = 5
 DIAGNOSTIC_EVENT_LIMIT = 80
-DIAGNOSTIC_TEXT_LIMIT = 900
+DIAGNOSTIC_TEXT_LIMIT = 5000
+DIAGNOSTIC_HTML_LIMIT = 12000
 
 _DIAGNOSTIC_STORES: dict[int, list[dict[str, Any]]] = {}
 _DIAGNOSTIC_CONTEXT_IDS: set[int] = set()
@@ -36,6 +37,12 @@ class BookingResult:
     status: str
     url: str
     message: str
+
+
+class BookingAutomationError(RuntimeError):
+    def __init__(self, message: str, diagnostics: dict[str, Any]):
+        super().__init__(message)
+        self.diagnostics = diagnostics
 
 
 def login_interactively(context: BrowserContext, config: AppConfig) -> None:
@@ -192,7 +199,7 @@ def admin_book_reservation(
             f"admin-book-error-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
             exc,
         )
-        raise RuntimeError(format_failure_message(str(exc), diagnostics)) from exc
+        raise BookingAutomationError(format_failure_message(str(exc), diagnostics), diagnostics) from exc
 
 
 def _admin_book_reservation_impl(
@@ -328,6 +335,7 @@ def save_failure_diagnostics(
 
     title = ""
     visible_text = ""
+    html_content = ""
     try:
         title = page.title(timeout=2000)
     except Exception:
@@ -341,7 +349,8 @@ def save_failure_diagnostics(
     except Exception:
         screenshot_path = None
     try:
-        html_path.write_text(page.content(), encoding="utf-8")
+        html_content = page.content()
+        html_path.write_text(html_content, encoding="utf-8")
     except Exception:
         html_path = None
 
@@ -358,6 +367,7 @@ def save_failure_diagnostics(
         "url": page.url,
         "title": title,
         "visibleTextExcerpt": text_excerpt,
+        "htmlExcerpt": html_content[:DIAGNOSTIC_HTML_LIMIT],
         "recentBrowserEvents": events,
         "artifacts": {
             "screenshot": str(screenshot_path) if screenshot_path else None,
@@ -402,6 +412,8 @@ def format_failure_message(error: str, diagnostics: dict[str, Any]) -> str:
         parts.append(f"Diagnostics: {diagnostics_path}")
     if screenshot_path:
         parts.append(f"Screenshot: {screenshot_path}")
+    parts.append("DIAGNOSTICS_JSON:")
+    parts.append(json.dumps(diagnostics, indent=2, ensure_ascii=False))
     return "\n".join(parts)
 
 
