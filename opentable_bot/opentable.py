@@ -45,6 +45,10 @@ class BookingAutomationError(RuntimeError):
         self.diagnostics = diagnostics
 
 
+class BookingCancelledError(RuntimeError):
+    pass
+
+
 def login_interactively(context: BrowserContext, config: AppConfig) -> None:
     page = _page(context)
     page.goto(config.opentable.login_url, wait_until="domcontentloaded")
@@ -188,11 +192,14 @@ def admin_book_reservation(
     config: AppConfig,
     *,
     confirm: bool,
+    cancel_event: Any | None = None,
 ) -> BookingResult:
     _ensure_browser_diagnostics(context)
     try:
-        return _admin_book_reservation_impl(context, config, confirm=confirm)
+        return _admin_book_reservation_impl(context, config, confirm=confirm, cancel_event=cancel_event)
     except Exception as exc:
+        if isinstance(exc, BookingCancelledError):
+            raise
         diagnostics = save_failure_diagnostics(
             context,
             config.path.parent / "artifacts",
@@ -207,10 +214,12 @@ def _admin_book_reservation_impl(
     config: AppConfig,
     *,
     confirm: bool,
+    cancel_event: Any | None = None,
 ) -> BookingResult:
     reservation = config.reservation
     selectors = config.admin.selectors or {}
     page = _page(context)
+    _raise_if_cancelled(cancel_event)
     page.goto(config.admin.reservations_url or config.admin.dashboard_url, wait_until="domcontentloaded")
     _dismiss_cookie_banner(page)
     _wait_for_page_ready(page)
@@ -221,17 +230,23 @@ def _admin_book_reservation_impl(
         )
 
     _admin_progress("opening reservation flow")
+    _raise_if_cancelled(cancel_event)
     _open_admin_reservation_modal(page, selectors)
     _admin_progress("setting date")
+    _raise_if_cancelled(cancel_event)
     _set_admin_date(page, reservation.date, selectors)
     full_name = f"{reservation.guest.first_name} {reservation.guest.last_name}".strip()
     _admin_progress("setting guests")
+    _raise_if_cancelled(cancel_event)
     _set_admin_party_size(page, reservation.party_size, selectors)
     _admin_progress("setting time")
+    _raise_if_cancelled(cancel_event)
     _set_admin_time(page, reservation.time, selectors)
     _admin_progress("setting guest")
+    _raise_if_cancelled(cancel_event)
     _set_admin_guest(page, reservation, selectors)
     _admin_progress("setting notes")
+    _raise_if_cancelled(cancel_event)
     _fill_configured_or_patterns(
         page,
         selectors.get("notes"),
@@ -240,6 +255,7 @@ def _admin_book_reservation_impl(
         required=False,
     )
 
+    _raise_if_cancelled(cancel_event)
     if not confirm:
         return BookingResult(
             status="ready",
@@ -252,13 +268,16 @@ def _admin_book_reservation_impl(
 
     if _is_dinner_time(reservation.time):
         _admin_progress("enabling credit card link switch for dinner")
+        _raise_if_cancelled(cancel_event)
         _set_admin_credit_card_link_checked(page, checked=True, required=True)
     else:
         _admin_progress("disabling credit card link switch for lunch")
+        _raise_if_cancelled(cancel_event)
         _set_admin_credit_card_link_checked(page, checked=False, required=False)
     _admin_progress(f"waiting {FINAL_CTA_DELAY_SECONDS}s before Make reservation")
-    sleep(FINAL_CTA_DELAY_SECONDS)
+    _sleep_with_cancel(FINAL_CTA_DELAY_SECONDS, cancel_event)
     _admin_progress("clicking Make reservation")
+    _raise_if_cancelled(cancel_event)
     _click_admin_make_reservation(page, selectors.get("save_button"))
     _wait_for_page_ready(page)
     return BookingResult(
@@ -270,6 +289,21 @@ def _admin_book_reservation_impl(
 
 def _admin_progress(message: str) -> None:
     print(f"[admin-book] {message}", flush=True)
+
+
+def _raise_if_cancelled(cancel_event: Any | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise BookingCancelledError("Booking cancelled by operator.")
+
+
+def _sleep_with_cancel(seconds: float, cancel_event: Any | None) -> None:
+    remaining = float(seconds)
+    while remaining > 0:
+        _raise_if_cancelled(cancel_event)
+        interval = min(0.25, remaining)
+        sleep(interval)
+        remaining -= interval
+    _raise_if_cancelled(cancel_event)
 
 
 def book_reservation(

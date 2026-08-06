@@ -37,6 +37,8 @@ class ServiceState:
     automation_lock: Lock
     queue: Queue[str]
     stop_event: Event
+    cancel_event: Event
+    current_job_id: str | None
 
 
 def run_service(
@@ -57,6 +59,8 @@ def run_service(
         automation_lock=Lock(),
         queue=Queue(),
         stop_event=Event(),
+        cancel_event=Event(),
+        current_job_id=None,
     )
 
     server = _build_server(host, port, state)
@@ -64,7 +68,7 @@ def run_service(
     server_thread.start()
     print(f"OpenTable service listening on http://{host}:{port}", flush=True)
     print(
-        "POST /admin-book to enqueue a job. POST /reload to reload automation code.",
+        "POST /admin-book to enqueue a job. POST /cancel to cancel. POST /reload to reload automation code.",
         flush=True,
     )
 
@@ -194,6 +198,16 @@ def run_poll_client(
                             payload=payload,
                             result=daemon_job.get("result") if isinstance(daemon_job.get("result"), dict) else daemon_job,
                         )
+                    elif final_status == "cancelled":
+                        _post_status(
+                            status_url,
+                            job_id,
+                            "cancelled",
+                            method=status_method,
+                            payload=payload,
+                            error=str(daemon_job.get("error") or "booking cancelled"),
+                            result=daemon_job,
+                        )
                     else:
                         _post_status(
                             status_url,
@@ -240,6 +254,11 @@ def _build_server(host: str, port: int, state: ServiceState) -> ThreadingHTTPSer
             _send_json(self, 404, {"error": "not found"})
 
         def do_POST(self) -> None:
+            if self.path == "/cancel":
+                cancelled = _cancel_jobs(state)
+                _send_json(self, 200, {"ok": True, **cancelled})
+                return
+
             if self.path == "/reload":
                 if not state.automation_lock.acquire(blocking=False):
                     _send_json(
@@ -271,6 +290,7 @@ def _build_server(host: str, port: int, state: ServiceState) -> ThreadingHTTPSer
 
             with state.lock:
                 state.jobs[job["id"]] = job
+                state.cancel_event.clear()
             state.queue.put(job["id"])
             _send_json(self, 202, {"id": job["id"], "status": job["status"]})
 
@@ -291,6 +311,10 @@ def _process_jobs(state: ServiceState) -> None:
 
         with state.lock:
             job = state.jobs[job_id]
+            if job.get("status") == "cancelled":
+                state.queue.task_done()
+                continue
+            state.current_job_id = job_id
             job["status"] = "running"
             job["started_at"] = _now()
         print(f"[service] running job {job_id}", flush=True)
@@ -300,7 +324,12 @@ def _process_jobs(state: ServiceState) -> None:
                 payload = job["payload"]
                 job_config = _config_from_payload(state.config, payload)
                 confirm = bool(payload.get("confirm", False))
-                result = opentable.admin_book_reservation(state.context, job_config, confirm=confirm)
+                result = opentable.admin_book_reservation(
+                    state.context,
+                    job_config,
+                    confirm=confirm,
+                    cancel_event=state.cancel_event,
+                )
                 opentable.save_artifacts(state.context, state.artifacts_dir, f"service-{job_id}")
             with state.lock:
                 job["status"] = "completed"
@@ -312,24 +341,64 @@ def _process_jobs(state: ServiceState) -> None:
                 }
             print(f"[service] completed job {job_id}", flush=True)
         except Exception as exc:
+            is_cancelled = isinstance(exc, opentable.BookingCancelledError)
             try:
-                opentable.save_artifacts(state.context, state.artifacts_dir, f"service-{job_id}-error")
+                if not is_cancelled:
+                    opentable.save_artifacts(state.context, state.artifacts_dir, f"service-{job_id}-error")
             except Exception:
                 pass
             with state.lock:
-                job["status"] = "failed"
+                job["status"] = "cancelled" if is_cancelled else "failed"
                 job["completed_at"] = _now()
                 job["error"] = str(exc)
-                diagnostics = getattr(exc, "diagnostics", None)
-                if diagnostics:
-                    job["diagnostics"] = diagnostics
-                    job["result"] = {
-                        "payload": job.get("payload"),
-                        "diagnostics": diagnostics,
-                    }
-            print(f"[service] failed job {job_id}: {exc}", flush=True)
+                if not is_cancelled:
+                    diagnostics = getattr(exc, "diagnostics", None)
+                    if diagnostics:
+                        job["diagnostics"] = diagnostics
+                        job["result"] = {
+                            "payload": job.get("payload"),
+                            "diagnostics": diagnostics,
+                        }
+            print(f"[service] {'cancelled' if is_cancelled else 'failed'} job {job_id}: {exc}", flush=True)
         finally:
+            with state.lock:
+                if state.current_job_id == job_id:
+                    state.current_job_id = None
+                state.cancel_event.clear()
             state.queue.task_done()
+
+
+def _cancel_jobs(state: ServiceState) -> dict[str, Any]:
+    with state.lock:
+        current_job_id = state.current_job_id
+        queued_ids: list[str] = []
+        for job_id, job in state.jobs.items():
+            if job.get("status") == "queued":
+                job["status"] = "cancelled"
+                job["completed_at"] = _now()
+                job["error"] = "Booking cancelled by operator before it started."
+                queued_ids.append(job_id)
+        if current_job_id:
+            state.cancel_event.set()
+            current_job = state.jobs.get(current_job_id)
+            if current_job:
+                current_job["cancel_requested_at"] = _now()
+
+    print(
+        "[service] cancel requested"
+        + (f" for running job {current_job_id}" if current_job_id else "")
+        + (f"; cancelled queued jobs: {', '.join(queued_ids)}" if queued_ids else ""),
+        flush=True,
+    )
+    return {
+        "current_job_id": current_job_id,
+        "queued_cancelled": queued_ids,
+        "message": (
+            "Cancel requested for the running job. The browser stays open."
+            if current_job_id
+            else "No running job. Queued jobs were cancelled."
+        ),
+    }
 
 
 def _config_from_payload(config: AppConfig, payload: dict[str, Any]) -> AppConfig:
