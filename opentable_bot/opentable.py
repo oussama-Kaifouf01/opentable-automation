@@ -876,6 +876,7 @@ def _set_admin_guest(page: Page, reservation: ReservationConfig, selectors: dict
     for scope in [*_admin_iframes(page), page]:
         if _click_add_to_guestbook(scope):
             sleep(0.2)
+            _complete_guestbook_contact_form(scope, reservation)
             break
 
 
@@ -893,9 +894,7 @@ def _search_or_create_admin_guest(scope, search_value: str, reservation: Reserva
 
     if not _click_add_to_guestbook(scope):
         return False
-    sleep(0.1)
-    _fill_guest_fields_in_scope(scope, reservation)
-    _click_add_to_guestbook(scope)
+    _complete_guestbook_contact_form(scope, reservation)
     return True
 
 
@@ -915,6 +914,78 @@ def _click_add_to_guestbook(scope) -> bool:
         for candidate in candidates:
             if _click_first_enabled(candidate, timeout=1500, force=True):
                 return True
+    return False
+
+
+def _complete_guestbook_contact_form(scope, reservation: ReservationConfig) -> None:
+    _wait_for_guestbook_contact_form(scope)
+    _fill_guestbook_contact_fields(scope, reservation)
+    if not _click_guestbook_done(scope):
+        raise RuntimeError("Could not click GuestCenter guestbook Done button.")
+    sleep(0.4)
+
+
+def _wait_for_guestbook_contact_form(scope) -> None:
+    candidates = [
+        scope.get_by_test_id("mgp-contact-form-button-done"),
+        scope.get_by_text(re.compile(r"^Edit Contact$", re.I)),
+        scope.get_by_placeholder(re.compile(r"^First name$", re.I)),
+        scope.get_by_placeholder(re.compile(r"^Last name$", re.I)),
+    ]
+    for candidate in candidates:
+        try:
+            candidate.first.wait_for(state="visible", timeout=5000)
+            return
+        except Exception:
+            continue
+    raise RuntimeError("GuestCenter guestbook contact form did not open after Add to Guestbook.")
+
+
+def _fill_guestbook_contact_fields(scope, reservation: ReservationConfig) -> None:
+    required = [
+        ("First name", reservation.guest.first_name),
+        ("Last name", reservation.guest.last_name),
+    ]
+    for placeholder, value in required:
+        if not value:
+            continue
+        if not _fill_guestbook_input(scope, placeholder, value, exact=True):
+            raise RuntimeError(f"Could not fill GuestCenter guestbook {placeholder}.")
+
+    if reservation.guest.phone:
+        _fill_guestbook_input(scope, "Phone number", reservation.guest.phone)
+
+
+def _fill_guestbook_input(scope, placeholder: str, value: str, *, exact: bool = False) -> bool:
+    pattern = re.compile(rf"^{re.escape(placeholder)}$", re.I)
+    candidates = [
+        scope.get_by_placeholder(pattern),
+        scope.locator(f"input[placeholder='{placeholder}']"),
+    ]
+    for candidate in candidates:
+        if _fill_first_editable(candidate, value):
+            return _guestbook_input_has_value(scope, placeholder, value, exact=exact)
+    return False
+
+
+def _guestbook_input_has_value(scope, placeholder: str, value: str, *, exact: bool) -> bool:
+    locator = scope.get_by_placeholder(re.compile(rf"^{re.escape(placeholder)}$", re.I)).first
+    try:
+        actual = locator.input_value(timeout=1000).strip()
+    except Exception:
+        return True
+    return actual == value if exact else bool(actual)
+
+
+def _click_guestbook_done(scope) -> bool:
+    candidates = [
+        scope.get_by_test_id("mgp-contact-form-button-done"),
+        scope.get_by_role("button", name=re.compile(r"^Done$", re.I)),
+        scope.locator("button").filter(has_text=re.compile(r"^Done$", re.I)),
+    ]
+    for candidate in candidates:
+        if _click_first_enabled(candidate, timeout=2500, force=True):
+            return True
     return False
 
 
@@ -1510,6 +1581,8 @@ def _click_admin_make_reservation(page: Page, selector: str | None) -> None:
     for scope in scopes:
         if _click_first_enabled(scope.get_by_test_id("save-booking-flow-button"), timeout=1000):
             return
+        if _click_save_button_text(scope, re.compile(r"^Make reservation$", re.I)):
+            return
 
     selector_patterns = [
         "[data-testid*='save' i]",
@@ -1556,6 +1629,14 @@ def _click_admin_make_reservation(page: Page, selector: str | None) -> None:
             "Visible clickable controls: " + " | ".join(summary[:20])
         )
     raise RuntimeError("Could not find GuestCenter Make reservation button. No visible clickable controls were detected.")
+
+
+def _click_save_button_text(scope, pattern: re.Pattern[str]) -> bool:
+    text = scope.locator('[data-testid="save-button-text"]').filter(has_text=pattern).first
+    button = text.locator("xpath=ancestor::button[1]")
+    if _click_first_enabled(button, timeout=1500, force=True):
+        return True
+    return _click_first_enabled(text, timeout=1500, force=True)
 
 
 _FINAL_SAVE_TEXT_PATTERN = re.compile(
