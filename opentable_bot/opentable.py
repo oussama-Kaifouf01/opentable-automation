@@ -819,6 +819,9 @@ def _click_calendar_day(page: Page, target: date) -> None:
 
 def _click_calendar_day_in_scope(scope, target: date) -> bool:
     day = str(target.day)
+    if _click_exact_calendar_day_text(scope, day):
+        return True
+
     cells = scope.locator("[class*='DatePicker__DayCell']")
     try:
         count = min(cells.count(), 80)
@@ -838,22 +841,25 @@ def _click_calendar_day_in_scope(scope, target: date) -> bool:
     except PlaywrightTimeoutError:
         pass
 
-    candidates = [
-        scope.get_by_role("button", name=re.compile(rf"^{day}$")),
-        scope.get_by_text(re.compile(rf"^{day}$")),
-    ]
-    for candidate in candidates:
+    return False
+
+
+def _click_exact_calendar_day_text(scope, day: str) -> bool:
+    try:
+        elements = scope.get_by_text(day, exact=True)
+        count = min(elements.count(), 10)
+    except Exception:
+        return False
+
+    for index in range(count):
+        element = elements.nth(index)
         try:
-            elements = candidate
-            count = min(elements.count(), 10)
-            for index in range(count):
-                element = elements.nth(index)
-                if _element_looks_disabled(element):
-                    continue
-                _log_click(element)
-                element.click(timeout=2000)
-                return True
-        except PlaywrightTimeoutError:
+            if _element_looks_disabled(element):
+                continue
+            _log_click(element)
+            element.click(timeout=2000)
+            return True
+        except Exception:
             continue
     return False
 
