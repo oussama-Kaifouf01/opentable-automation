@@ -876,7 +876,11 @@ def _set_admin_guest(page: Page, reservation: ReservationConfig, selectors: dict
     for scope in [*_admin_iframes(page), page]:
         if _click_add_to_guestbook(scope):
             sleep(0.2)
-            _complete_guestbook_contact_form(scope, reservation)
+            try:
+                _complete_guestbook_contact_form(scope, reservation)
+            except RuntimeError:
+                if not _select_existing_admin_guest(scope, reservation):
+                    raise
             break
 
 
@@ -890,7 +894,10 @@ def _search_or_create_admin_guest(scope, search_value: str, reservation: Reserva
         search.press("Enter", timeout=1000)
     except PlaywrightTimeoutError:
         pass
-    sleep(0.1)
+    sleep(0.5)
+
+    if _select_existing_admin_guest(scope, reservation):
+        return True
 
     if not _click_add_to_guestbook(scope):
         return False
@@ -913,6 +920,45 @@ def _click_add_to_guestbook(scope) -> bool:
         ]
         for candidate in candidates:
             if _click_first_enabled(candidate, timeout=1500, force=True):
+                return True
+    return False
+
+
+def _select_existing_admin_guest(scope, reservation: ReservationConfig) -> bool:
+    full_name = f"{reservation.guest.first_name} {reservation.guest.last_name}".strip()
+    if not full_name:
+        return False
+
+    pattern = re.compile(re.escape(full_name), re.I)
+    candidates = [
+        scope.get_by_role("button", name=pattern),
+        scope.get_by_role("link", name=pattern),
+        scope.get_by_role("option", name=pattern),
+        scope.locator("[role='button']").filter(has_text=pattern),
+        scope.locator("[role='option']").filter(has_text=pattern),
+        scope.locator("button").filter(has_text=pattern),
+        scope.locator("a").filter(has_text=pattern),
+    ]
+    for candidate in candidates:
+        if _click_first_enabled(candidate, timeout=2000, force=True):
+            sleep(0.4)
+            return True
+
+    text_candidate = scope.get_by_text(pattern)
+    try:
+        count = min(text_candidate.count(), 20)
+    except Exception:
+        count = 0
+    for index in range(count):
+        item = text_candidate.nth(index)
+        for target in (
+            item.locator("xpath=ancestor::button[1]"),
+            item.locator("xpath=ancestor::*[@role='button'][1]"),
+            item.locator("xpath=ancestor::*[@role='option'][1]"),
+            item,
+        ):
+            if _click_first_enabled(target, timeout=1500, force=True):
+                sleep(0.4)
                 return True
     return False
 
